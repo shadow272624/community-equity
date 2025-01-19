@@ -1,0 +1,131 @@
+import random
+import networkx as nx
+
+class LouvainFairness:
+    def __init__(self, graph):
+        self._G = graph
+        self._vid_vertex = {node: Vertex(node) for node in graph.nodes()}
+        self._cid_vertices = {}  # 存储每个社区的节点集合
+        self._m = self._G.number_of_edges()  # 网络中的总边数
+
+    def initialize_communities(self):
+        for vid in self._G.nodes():
+            self._vid_vertex[vid]._cid = vid  # 每个节点初始为自己的社区
+            if vid not in self._cid_vertices:
+                self._cid_vertices[vid] = set()
+            self._cid_vertices[vid].add(vid)
+
+    def calculate_modularity(self, cid):
+        # 计算给定社区的模块化
+        # 这里需要实现模块化的计算逻辑
+        return random.random()  # 示例返回随机值
+
+    def calculate_modularity_gain(self, v_vid, w_cid):
+        # 计算将节点 v_vid 移动到社区 w_cid 的模块化增益
+        return random.random()  # 示例返回随机值
+
+    def calculate_modularity_fairness(self, community):
+        red_nodes = [n for n in community if self._G.nodes[n]['color'] == 'red']
+        blue_nodes = [n for n in community if self._G.nodes[n]['color'] == 'blue']
+
+        L_R = sum(1 for u in red_nodes for v in red_nodes if self._G.has_edge(u, v))
+        L_B = sum(1 for u in blue_nodes for v in blue_nodes if self._G.has_edge(u, v))
+
+        d_C = sum(self._G.degree(n) for n in community)
+        d_R = sum(self._G.degree(n) for n in red_nodes)
+        d_B = sum(self._G.degree(n) for n in blue_nodes)
+
+        m = self._m  # 网络中的总边数
+
+        Q_R = (L_R / (2 * m)) - (d_C * d_R) / (2 * m) ** 2
+        Q_B = (L_B / (2 * m)) - (d_C * d_B) / (2 * m) ** 2
+
+        modularity_fairness = (Q_R - Q_B) / (abs(Q_R) + abs(Q_B)) if (Q_R + Q_B) != 0 else 0
+        return modularity_fairness
+
+    def standard_louvain(self):
+        self.initialize_communities()
+        while True:
+            mod_inc = False
+            visit_sequence = list(self._G.nodes())
+            random.shuffle(visit_sequence)
+
+            for v_vid in visit_sequence:
+                v_cid = self._vid_vertex[v_vid]._cid
+                current_modularity = self.calculate_modularity(v_cid)
+
+                for w_vid in self._G[v_vid]:
+                    w_cid = self._vid_vertex[w_vid]._cid
+                    if w_cid == v_cid:
+                        continue
+
+                    delta_modularity = self.calculate_modularity_gain(v_vid, w_cid)
+
+                    if delta_modularity > 0:
+                        self._vid_vertex[v_vid]._cid = w_cid
+                        mod_inc = True
+
+            if not mod_inc:
+                break
+
+        return len(set(vertex._cid for vertex in self._vid_vertex.values()))
+
+    def first_stage_with_fairness(self):
+        mod_inc = False
+        visit_sequence = list(self._G.nodes())
+        random.shuffle(visit_sequence)
+
+        while True:
+            can_stop = True
+            for v_vid in visit_sequence:
+                v_cid = self._vid_vertex[v_vid]._cid
+                cid_Q = {}
+
+                current_QR = self.calculate_modularity_fairness(self._cid_vertices[v_cid])
+
+                for w_vid in self._G[v_vid]:
+                    w_cid = self._vid_vertex[w_vid]._cid
+                    if w_cid == v_cid:
+                        continue
+
+                    new_QR = self.calculate_modularity_fairness(self._cid_vertices[w_cid])
+                    absolute_difference = abs(current_QR - new_QR)
+
+                    cid_Q[w_cid] = absolute_difference
+
+                if cid_Q:
+                    best_cid = min(cid_Q, key=cid_Q.get)
+                    min_difference = cid_Q[best_cid]
+
+                    if min_difference < 0.1 and best_cid != v_cid:  # some_threshold = 0.1
+                        self._vid_vertex[v_vid]._cid = best_cid
+                        self._cid_vertices[best_cid].add(v_vid)
+                        self._cid_vertices[v_cid].remove(v_vid)
+                        can_stop = False
+                        mod_inc = True
+
+            if can_stop:
+                break
+        return mod_inc
+
+    def run_louvain_with_fairness(self):
+        community_count = self.standard_louvain()
+        print(f"Initial community count: {community_count}")
+        self.first_stage_with_fairness()
+
+class Vertex:
+    def __init__(self, vid):
+        self._vid = vid
+        self._cid = None
+
+# 示例用法
+if __name__ == "__main__":
+    # 创建一个示例图
+    G = nx.erdos_renyi_graph(100, 0.05)  # 生成一个随机图
+
+    # 为节点随机分配颜色
+    for node in G.nodes():
+        G.nodes[node]['color'] = random.choice(['red', 'blue'])
+
+    louvain_fairness = LouvainFairness(G)
+    louvain_fairness.run_louvain_with_fairness()
