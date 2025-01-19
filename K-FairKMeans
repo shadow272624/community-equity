@@ -1,0 +1,86 @@
+import numpy as np
+from sklearn.datasets import make_blobs
+from sklearn.metrics import pairwise_distances_argmin
+from collections import Counter
+#将数据点划分为k个簇，最小化点与簇中心之间的距离
+class K-FairKMeans:
+    def __init__(self, n_clusters=3, max_iter=100, tol=1e-4, fairness_constraint=0.1):
+        # 初始化参数
+        self.n_clusters = n_clusters  # 簇的数量
+        self.max_iter = max_iter  # 最大迭代次数
+        self.tol = tol  # 收敛容忍度（小于该值则停止收敛）
+        self.fairness_constraint = fairness_constraint  # 公平性约束比例（各个群体在最终结果中的比例）
+
+    def fit(self, X, sensitive_attr):
+        # 拟合模型
+        n_samples, n_features = X.shape
+        # 随机初始化质心
+        random_indices = np.random.choice(n_samples, self.n_clusters, replace=False)#不选取重复样本
+        self.centroids = X[random_indices]
+
+        for i in range(self.max_iter):
+            # 分配簇
+            labels = pairwise_distances_argmin(X, self.centroids)#计算每个数据点到各个质心的距离
+            # 更新质心
+            new_centroids = np.array([X[labels == j].mean(axis=0) for j in range(self.n_clusters)])
+
+            # 检查收敛
+            if np.linalg.norm(new_centroids - self.centroids) < self.tol:
+                break
+            self.centroids = new_centroids
+
+            # 强制执行公平性约束
+            self.enforce_fairness(X, labels, sensitive_attr)
+
+    def enforce_fairness(self, X, labels, sensitive_attr):
+        # 检查每个簇中敏感属性的分布
+        for j in range(self.n_clusters):
+            cluster_indices = np.where(labels == j)[0]
+            if len(cluster_indices) == 0:
+                continue
+            sensitive_counts = Counter(sensitive_attr[cluster_indices])  # 统计敏感属性的数量
+            total_count = sum(sensitive_counts.values())
+
+            # 检查分布是否满足公平性约束
+            for count in sensitive_counts.values():
+                if count / total_count < self.fairness_constraint:
+                    # 调整簇以满足公平性约束
+                    self.adjust_cluster(X, labels, j, sensitive_attr)
+
+    def adjust_cluster(self, X, labels, cluster_index, sensitive_attr):
+        # 简单的调整方法：重新分配点以平衡簇
+        cluster_indices = np.where(labels == cluster_index)[0]
+        if len(cluster_indices) == 0:
+            return
+        # 找到可以从该簇移动的点
+        for i in range(len(X)):
+            if labels[i] != cluster_index:
+                # 检查移动此点是否有助于平衡簇
+                labels[i] = cluster_index
+                self.enforce_fairness(X, labels, sensitive_attr)  # 重新检查公平性约束
+                break
+
+    def predict(self, X):
+        # 预测簇标签
+        return pairwise_distances_argmin(X, self.centroids)
+
+# 示例用法
+if __name__ == "__main__":
+    # 生成合成数据
+    X, y = make_blobs(n_samples=300, centers=3, cluster_std=0.60, random_state=0)
+
+    # 假设敏感属性是二元的（0或1）
+    sensitive_attr = np.random.choice([0, 1], size=300)
+
+    # 拟合公平K均值聚类
+    fair_kmeans = FairKMeans(n_clusters=3, fairness_constraint=0.2)
+    fair_kmeans.fit(X, sensitive_attr)
+
+    # 预测簇标签
+    labels = fair_kmeans.predict(X)
+
+    # 可视化聚类结果
+    import matplotlib.pyplot as plt
+    plt.scatter(X[:, 0], X[:, 1], c=labels, s=50, cmap='viridis')
+    plt.scatter(fair_kmeans.centroids[:, 0], fair_kmeans.centroids[:, 1], c='red', s=200, alpha=0.75)
+    plt.show()
