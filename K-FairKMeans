@@ -3,7 +3,7 @@ from sklearn.datasets import make_blobs
 from sklearn.metrics import pairwise_distances_argmin
 from collections import Counter
 #将数据点划分为k个簇，最小化点与簇中心之间的距离
-class K-FairKMeans:
+class FairKMeans:
     def __init__(self, n_clusters=3, max_iter=100, tol=1e-4, fairness_constraint=0.1):
         # 初始化参数
         self.n_clusters = n_clusters  # 簇的数量
