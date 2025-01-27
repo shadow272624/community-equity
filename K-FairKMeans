@@ -1,86 +1,116 @@
 import numpy as np
-from sklearn.datasets import make_blobs
+import matplotlib.pyplot as plt
 from sklearn.metrics import pairwise_distances_argmin
-from collections import Counter
-#将数据点划分为k个簇，最小化点与簇中心之间的距离
-class FairKMeans:
-    def __init__(self, n_clusters=3, max_iter=100, tol=1e-4, fairness_constraint=0.1):
-        # 初始化参数
+
+class BalancedFairKMeans:
+    def __init__(self, n_clusters=3, max_iter=100, tol=1e-4, p1=1.0, p2=1.0):
         self.n_clusters = n_clusters  # 簇的数量
-        self.max_iter = max_iter  # 最大迭代次数
-        self.tol = tol  # 收敛容忍度（小于该值则停止收敛）
-        self.fairness_constraint = fairness_constraint  # 公平性约束比例（各个群体在最终结果中的比例）
+        self.max_iter = max_iter      # 最大迭代次数
+        self.tol = tol                # 收敛容忍度
+        self.p1 = p1                  # 权重参数1
+        self.p2 = p2                  # 权重参数2
 
-    def fit(self, X, sensitive_attr):
-        # 拟合模型
-        n_samples, n_features = X.shape
-        # 随机初始化质心
-        random_indices = np.random.choice(n_samples, self.n_clusters, replace=False)#不选取重复样本
-        self.centroids = X[random_indices]
+    def fit(self, X, F):
+        n_samples, n_features = X.shape  # 获取样本数量和特征数量
+        last_labels = np.zeros(n_samples)
+        labels = np.random.randint(0, self.n_clusters, size=n_samples)  # 随机初始化标签
+        Y = self.indicator_matrix(labels)  # 指示矩阵
 
-        for i in range(self.max_iter):
-            # 分配簇
-            labels = pairwise_distances_argmin(X, self.centroids)#计算每个数据点到各个质心的距离
-            # 更新质心
-            new_centroids = np.array([X[labels == j].mean(axis=0) for j in range(self.n_clusters)])
+        YY = np.sum(Y, axis=0)  # 计算每个簇的样本数量
+        centers = np.zeros((self.n_clusters, n_features))  # 初始化质心
 
-            # 检查收敛
-            if np.linalg.norm(new_centroids - self.centroids) < self.tol:
-                break
-            self.centroids = new_centroids
+        # 计算初始质心
+        for c in range(self.n_clusters):
+            centers[c] = np.sum(X[labels == c], axis=0) / YY[c] if YY[c] > 0 else np.zeros(n_features)
 
-            # 强制执行公平性约束
-            self.enforce_fairness(X, labels, sensitive_attr)
+        iter_count = 0
+        err = 1
 
-    def enforce_fairness(self, X, labels, sensitive_attr):
-        # 检查每个簇中敏感属性的分布
-        for j in range(self.n_clusters):
-            cluster_indices = np.where(labels == j)[0]
-            if len(cluster_indices) == 0:
-                continue
-            sensitive_counts = Counter(sensitive_attr[cluster_indices])  # 统计敏感属性的数量
-            total_count = sum(sensitive_counts.values())
+        while (err > 0.001 and iter_count <= self.max_iter and np.any(labels != last_labels)):
+            last_labels = labels.copy()
 
-            # 检查分布是否满足公平性约束
-            for count in sensitive_counts.values():
-                if count / total_count < self.fairness_constraint:
-                    # 调整簇以满足公平性约束
-                    self.adjust_cluster(X, labels, j, sensitive_attr)
+            for i in range(n_samples):
+                idx_label = labels[i]
+                idx_group = np.where(F[i, :] > 0)[0][0]  # 找到该点的组
 
-    def adjust_cluster(self, X, labels, cluster_index, sensitive_attr):
-        # 简单的调整方法：重新分配点以平衡簇
-        cluster_indices = np.where(labels == cluster_index)[0]
-        if len(cluster_indices) == 0:
-            return
-        # 找到可以从该簇移动的点
-        for i in range(len(X)):
-            if labels[i] != cluster_index:
-                # 检查移动此点是否有助于平衡簇
-                labels[i] = cluster_index
-                self.enforce_fairness(X, labels, sensitive_attr)  # 重新检查公平性约束
-                break
+                Y[i, :] = 0  # 清除当前点的指示
+                YY[idx_label] -= 1  # 更新簇大小
 
-    def predict(self, X):
-        # 预测簇标签
-        return pairwise_distances_argmin(X, self.centroids)
+                min_cost = float('inf')
+                idx = 0
+                for c in range(self.n_clusters):
+                    YY[c] += 1
+                    #成本函数：p1表示公平性重视程度，p2表示平衡性的重视函数
+                    cost = np.sum((X[i, :] - centers[c, :]) ** 2) + self.p1 * np.sum((YY - np.mean(YY)) ** 2) + self.p2 * np.sum(1 / YY)
+                    YY[c] -= 1
+
+                    if min_cost > cost:
+                        min_cost = cost
+                        idx = c
+
+                Y[i, idx] = 1  # 更新指示矩阵
+                YY[idx] += 1
+
+            labels = np.argmax(Y, axis=1)  # 更新标签
+            centers = np.zeros((self.n_clusters, n_features))  # 重置质心
+            for c in range(self.n_clusters):
+                centers[c] = np.sum(X[labels == c], axis=0) / (np.sum(Y[:, c]) if np.sum(Y[:, c]) > 0 else 1)
+
+            iter_count += 1
+
+        if iter_count > self.max_iter and err > 0.001 and np.any(labels != last_labels):
+            print(f"Warning: failed to converge in {self.max_iter} iterations")
+
+        return labels, centers
+
+    def indicator_matrix(self, labels):
+        # 创建指示矩阵
+        n_samples = len(labels)
+        Y = np.zeros((n_samples, self.n_clusters))
+        for i in range(n_samples):
+            Y[i, labels[i]] = 1
+        return Y
 
 # 示例用法
 if __name__ == "__main__":
-    # 生成合成数据
-    X, y = make_blobs(n_samples=300, centers=3, cluster_std=0.60, random_state=0)
+    n_samples_per_cluster = 20  # 每个簇的样本数量
+    n_clusters = 3               # 簇的数量
+    samples_per_color = n_samples_per_cluster // 2  # 每个簇的颜色样本数量
 
-    # 假设敏感属性是二元的（0或1）
-    sensitive_attr = np.random.choice([0, 1], size=300)
+    # 生成数据，确保每个簇内部红色和蓝色节点均匀分配
+    X = []
+    colors = []  # 存储颜色标签
+    F = np.zeros((n_samples_per_cluster * n_clusters, n_clusters))  # 组指示矩阵，列数应为簇的数量
+    for i in range(n_clusters):
+        # 生成红色和蓝色点
+        cluster_data = np.random.randn(n_samples_per_cluster, 2) + np.array([i * 5, i * 5])  # 每个簇的中心
+        for j in range(samples_per_color):
+            # 红色点
+            X.append(cluster_data[j] + np.random.normal(0, 0.5, cluster_data[j].shape))
+            F[i * n_samples_per_cluster + j, i] = 1  # 设置组指示
+            colors.append('red')  # 记录颜色
 
-    # 拟合公平K均值聚类
-    fair_kmeans = FairKMeans(n_clusters=3, fairness_constraint=0.2)
-    fair_kmeans.fit(X, sensitive_attr)
+            # 蓝色点
+            X.append(cluster_data[j + samples_per_color] + np.random.normal(0, 0.5, cluster_data[j + samples_per_color].shape))
+            F[i * n_samples_per_cluster + j + samples_per_color, i] = 1  # 设置组指示
+            colors.append('blue')  # 记录颜色
 
-    # 预测簇标签
-    labels = fair_kmeans.predict(X)
+    X = np.array(X)
 
-    # 可视化聚类结果
-    import matplotlib.pyplot as plt
-    plt.scatter(X[:, 0], X[:, 1], c=labels, s=50, cmap='viridis')
-    plt.scatter(fair_kmeans.centroids[:, 0], fair_kmeans.centroids[:, 1], c='red', s=200, alpha=0.75)
+    # 确保 F 的行数与 X 的行数一致
+    if F.shape[0] != X.shape[0]:
+        raise ValueError(f"F's number of rows {F.shape[0]} does not match X's number of rows {X.shape[0]}.")
+
+    fair_kmeans = BalancedFairKMeans(n_clusters=n_clusters)
+    labels, centers = fair_kmeans.fit(X, F)
+
+    # 绘制图形，确保中心点为黄色，其他点为红色和蓝色
+    plt.figure(figsize=(8, 6))
+    plt.scatter(X[:, 0], X[:, 1], c=colors, s=50, alpha=0.5, label='Data Points')  # 使用固定颜色
+    plt.scatter(centers[:, 0], centers[:, 1], c='yellow', s=200, alpha=0.75, label='Centroids')
+    plt.title('Balanced Fair K-Means Clustering with Fixed Colors')
+    plt.xlabel('Feature 1')
+    plt.ylabel('Feature 2')
+    plt.legend()
     plt.show()
+
