@@ -1,13 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 class BalancedFairKMeans:
     def __init__(self, n_clusters=3, max_iter=100, tol=1e-4, p1=1.0, p2=1.0):
         self.n_clusters = n_clusters  # 簇的数量
-        self.max_iter = max_iter      # 最大迭代次数
-        self.tol = tol                # 收敛容忍度
-        self.p1 = p1                  # 权重参数1
-        self.p2 = p2                  # 权重参数2
+        self.max_iter = max_iter  # 最大迭代次数
+        self.tol = tol  # 收敛容忍度
+        self.p1 = p1  # 权重参数1
+        self.p2 = p2  # 权重参数2
 
     def fit(self, X, F):
         n_samples, n_features = X.shape  # 获取样本数量和特征数量
@@ -15,17 +16,20 @@ class BalancedFairKMeans:
         labels = np.random.randint(0, self.n_clusters, size=n_samples)  # 随机初始化标签
         Y = self.indicator_matrix(labels)  # 指示矩阵
 
-        YY = np.sum(Y, axis=0)  # 计算每个簇的样本数量
         centers = np.zeros((self.n_clusters, n_features))  # 初始化质心
 
         # 计算初始质心
         for c in range(self.n_clusters):
-            centers[c] = np.sum(X[labels == c], axis=0) / YY[c] if YY[c] > 0 else np.zeros(n_features)
+            if np.sum(labels == c) > 0:
+                centers[c] = np.mean(X[labels == c], axis=0)
 
         iter_count = 0
         err = 1
 
-        while (err > 0.001 and iter_count <= self.max_iter and np.any(labels != last_labels)):
+        # 计算整个数据集中每个群体的比例
+        group_proportions = np.sum(F, axis=0) / n_samples
+
+        while (err > self.tol and iter_count < self.max_iter and np.any(labels != last_labels)):
             last_labels = labels.copy()
 
             for i in range(n_samples):
@@ -33,31 +37,41 @@ class BalancedFairKMeans:
                 idx_group = np.where(F[i, :] > 0)[0][0]  # 找到该点的组
 
                 Y[i, :] = 0  # 清除当前点的指示
-                YY[idx_label] -= 1  # 更新簇大小
 
                 min_cost = float('inf')
                 idx = 0
                 for c in range(self.n_clusters):
-                    YY[c] += 1
+                    # 计算当前聚类中不同群体的数量
+                    cluster_group_counts = np.sum(F[labels == c], axis=0)
+                    total_in_cluster = np.sum(cluster_group_counts)
+
+                    # 计算公平性损失
+                    if total_in_cluster > 0:
+                        fairness_loss = np.sum(np.abs(cluster_group_counts / total_in_cluster - group_proportions))
+                    else:
+                        fairness_loss = 0
+
                     # 成本函数：p1表示公平性重视程度，p2表示平衡性的重视函数
-                    cost = np.sum((X[i, :] - centers[c, :]) ** 2) + self.p1 * np.sum((YY - np.mean(YY)) ** 2) + self.p2 * np.sum(1 / (YY + 1e-10))
-                    YY[c] -= 1
+                    cost = np.sum((X[i, :] - centers[c, :]) ** 2) + self.p1 * fairness_loss + self.p2 * (
+                            total_in_cluster / n_samples)
 
                     if min_cost > cost:
                         min_cost = cost
                         idx = c
 
                 Y[i, idx] = 1  # 更新指示矩阵
-                YY[idx] += 1
 
             labels = np.argmax(Y, axis=1)  # 更新标签
             centers = np.zeros((self.n_clusters, n_features))  # 重置质心
             for c in range(self.n_clusters):
-                centers[c] = np.sum(X[labels == c], axis=0) / (np.sum(Y[:, c]) if np.sum(Y[:, c]) > 0 else 1)
+                if np.sum(labels == c) > 0:
+                    centers[c] = np.mean(X[labels == c], axis=0)
+                else:
+                    centers[c] = np.zeros(n_features)  # 如果没有样本，则将质心设置为零
 
             iter_count += 1
 
-        if iter_count > self.max_iter and err > 0.001 and np.any(labels != last_labels):
+        if iter_count >= self.max_iter and err > self.tol:
             print(f"Warning: failed to converge in {self.max_iter} iterations")
 
         return labels, centers
@@ -67,13 +81,14 @@ class BalancedFairKMeans:
         n_samples = len(labels)
         Y = np.zeros((n_samples, self.n_clusters))
         for i in range(n_samples):
-            Y[i, labels[i]] = 1
+            Y[i, labels[i]] = 1  # 对应标签位置设置为1，表示该样本属于相应的簇
         return Y
+
 
 # 示例用法
 if __name__ == "__main__":
     n_samples_per_cluster = 50  # 每个簇的样本数量
-    n_clusters = 5               # 簇的数量
+    n_clusters = 5  # 簇的数量
 
     # 生成数据，确保每个簇内部红色和蓝色节点均匀分配
     X = []
@@ -108,7 +123,13 @@ if __name__ == "__main__":
 
     # 绘制 p2=1 的结果
     plt.subplot(1, 2, 1)
-    plt.scatter(X[:, 0], X[:, 1], c=colors, s=50, alpha=0.5, label='Data Points')  # 使用固定颜色
+    for i in range(len(X)):
+        if colors[i] == 'red':
+            plt.scatter(X[i, 0], X[i, 1], c='red', s=50, alpha=0.5, marker='^',
+                        label='Red Points' if i == 0 else "")  # 红色三角形
+        else:
+            plt.scatter(X[i, 0], X[i, 1], c='blue', s=50, alpha=0.5, marker='s',
+                        label='Blue Points' if i == 1 else "")  # 蓝色方块
     plt.scatter(centers_p2_1[:, 0], centers_p2_1[:, 1], c='yellow', s=200, alpha=0.75, label='Centroids')
     plt.title('Balanced Fair K-Means Clustering (p2=1)')
     plt.xlabel('Feature 1')
@@ -120,7 +141,13 @@ if __name__ == "__main__":
 
     # 绘制 p2=0 的结果
     plt.subplot(1, 2, 2)
-    plt.scatter(X[:, 0], X[:, 1], c=colors, s=50, alpha=0.5, label='Data Points')  # 使用固定颜色
+    for i in range(len(X)):
+        if colors[i] == 'red':
+            plt.scatter(X[i, 0], X[i, 1], c='red', s=50, alpha=0.5, marker='^',
+                        label='Red Points' if i == 0 else "")  # 红色三角形
+        else:
+            plt.scatter(X[i, 0], X[i, 1], c='blue', s=50, alpha=0.5, marker='s',
+                        label='Blue Points' if i == 1 else "")  # 蓝色方块
     plt.scatter(centers_p2_0[:, 0], centers_p2_0[:, 1], c='yellow', s=200, alpha=0.75, label='Centroids')
     plt.title('Balanced Fair K-Means Clustering (p2=0)')
     plt.xlabel('Feature 1')
