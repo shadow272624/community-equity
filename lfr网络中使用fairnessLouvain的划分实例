@@ -1,0 +1,232 @@
+import networkx as nx
+import matplotlib.pyplot as plt
+import random
+from networkx.generators.community import LFR_benchmark_graph
+import collections
+
+# 设置参数
+n = 300  # 节点数
+tau1 = 2.0  # 群组内度分布指数
+tau2 = 1.5  # 群组之间度分布指数
+mu = 0.1  # 社区之间边的比例
+
+average_degree = 30  # 降低期望的平均度数
+min_degree = None  # 不指定最小度数，通过 average_degree 自动计算
+max_degree = 100  # 最大度数
+min_community = 30  # 最小社区大小
+max_community = 100  # 最大社区大小
+
+max_iters = 1000  # 最大迭代次数
+
+
+# 加载图数据
+def load_graph(G):
+    graph = collections.defaultdict(dict)
+    for edge in G.edges():
+        graph[edge[0]][edge[1]] = 1.0  # 默认边权重为1
+        graph[edge[1]][edge[0]] = 1.0
+    return graph
+
+
+# 节点类 存储社区与节点编号信息
+class Vertex:
+    def __init__(self, vid, cid, nodes, k_in=0):
+        self._vid = vid
+        self._cid = cid
+        self._nodes = nodes
+        self._kin = k_in
+
+
+class Louvain:
+    def __init__(self, G):
+        self._G = G
+        self._m = 0
+        self._cid_vertices = {}
+        self._vid_vertex = {}
+        for vid in self._G.keys():
+            self._cid_vertices[vid] = {vid}
+            self._vid_vertex[vid] = Vertex(vid, vid, {vid})
+            self._m += sum([1 for neighbor in self._G[vid].keys() if neighbor > vid])
+
+    # 计算公平性模块度
+    def fmodularity(self, community):
+        QR = 0  # 红色模块度
+        QB = 0  # 蓝色模块度
+        Q = 0  # 总模块度
+
+        # 计算每个社区的公平性模块度
+        for node in community:
+            for neighbor in self._G[node]:
+                if neighbor in community:
+                    if self._vid_vertex[node]._cid == self._vid_vertex[neighbor]._cid:
+                        QR += 1  # 红色连接
+                    else:
+                        QB += 1  # 蓝色连接
+
+        Q = QR + QB
+        # 计算公平性模块度：红色和蓝色之间的差异
+        return (QR - QB) / abs(Q) if Q != 0 else 0
+
+    # 模块度优化阶段
+    def first_stage(self):
+        mod_inc = False
+        visit_sequence = list(self._G.keys())
+        random.shuffle(visit_sequence)
+
+        can_stop = True
+        while True:  # 确保 'while' 循环在这里开始
+            can_stop = True
+            for v_vid in visit_sequence:
+                v_cid = self._vid_vertex[v_vid]._cid
+                k_v = sum(self._G[v_vid].values()) + self._vid_vertex[v_vid]._kin
+                cid_Q = {}
+                for w_vid in self._G[v_vid].keys():
+                    w_cid = self._vid_vertex[w_vid]._cid
+                    if w_cid in cid_Q:
+                        continue
+                    else:
+                        # 计算模块度增益
+                        current_fmod = self.fmodularity(self._cid_vertices[v_cid])
+                        new_fmod = self.fmodularity(self._cid_vertices[w_cid])
+                        Q = new_fmod - current_fmod
+                        cid_Q[w_cid] = Q
+
+                if cid_Q:
+                    cid, max_Q = sorted(cid_Q.items(), key=lambda item: item[1], reverse=True)[0]
+                    if max_Q > 0.0 and cid != v_cid:
+                        self._vid_vertex[v_vid]._cid = cid
+                        self._cid_vertices[cid].add(v_vid)
+                        self._cid_vertices[v_cid].remove(v_vid)
+                        can_stop = False
+                        mod_inc = True
+
+            if can_stop:  # 这部分要放在 'while' 循环内部
+                break
+        return mod_inc
+
+    # 网络凝聚阶段
+    def second_stage(self):
+        cid_vertices = {}
+        vid_vertex = {}
+        for cid, vertices in self._cid_vertices.items():
+            if len(vertices) == 0:
+                continue
+            new_vertex = Vertex(cid, cid, set())
+            for vid in vertices:
+                new_vertex._nodes.update(self._vid_vertex[vid]._nodes)
+                new_vertex._kin += self._vid_vertex[vid]._kin
+                for k, v in self._G[vid].items():
+                    if k in vertices:
+                        new_vertex._kin += v / 2.0
+            cid_vertices[cid] = {cid}
+            vid_vertex[cid] = new_vertex
+
+        G = collections.defaultdict(dict)
+        for cid1, vertices1 in self._cid_vertices.items():
+            if len(vertices1) == 0:
+                continue
+            for cid2, vertices2 in self._cid_vertices.items():
+                if cid2 <= cid1 or len(vertices2) == 0:
+                    continue
+                edge_weight = 0.0
+                for vid in vertices1:
+                    for k, v in self._G[vid].items():
+                        if k in vertices2:
+                            edge_weight += v
+                if edge_weight != 0:
+                    G[cid1][cid2] = edge_weight
+                    G[cid2][cid1] = edge_weight
+        self._cid_vertices = cid_vertices
+        self._vid_vertex = vid_vertex
+        self._G = G
+
+    # 获取社区划分
+    def get_communities(self):
+        communities = []
+        for vertices in self._cid_vertices.values():
+            if len(vertices) != 0:
+                c = set()
+                for vid in vertices:
+                    c.update(self._vid_vertex[vid]._nodes)
+                communities.append(list(c))
+        return communities
+
+    # 执行 Louvain 算法
+    def execute(self):
+        iter_time = 1
+        while True:
+            iter_time += 1
+            mod_inc = self.first_stage()
+            if mod_inc:
+                self.second_stage()
+            else:
+                break
+        return self.get_communities()
+
+def showCommunity(G, partition, pos):
+    num_communities = len(partition)
+
+    # 明确设置红色和蓝色
+    colors = ['r', 'b']  # 红色和蓝色，按顺序分配
+
+    cluster = {}
+    for index, item in enumerate(partition):
+        for nodeID in item:
+            cluster[nodeID] = index
+
+    # 设置所有节点为圆形
+    for index, item in enumerate(partition):
+        if index < num_communities:
+            nx.draw_networkx_nodes(G, pos, nodelist=item,
+                                   node_color=[colors[index % len(colors)]],  # 使用红色和蓝色
+                                   node_shape='o',  # 所有节点为圆形
+                                   node_size=100,
+                                   alpha=1)
+
+    # 绘制边
+    for edge in G.edges():
+        community_index_1 = cluster[edge[0]]
+        community_index_2 = cluster[edge[1]]
+
+        if community_index_1 == community_index_2:
+            edge_color = colors[community_index_1 % len(colors)]  # 同一社区的边
+        else:
+            edge_color = 'black'  # 不同社区的边使用黑色
+
+        nx.draw_networkx_edges(G, pos,
+                               edgelist=[edge],
+                               width=1, alpha=0.5, edge_color=edge_color)
+
+    # 去掉节点标签
+    plt.axis('off')
+    plt.show()
+
+# 生成LFR基准图并使用Louvain算法进行社区划分
+try:
+    G = LFR_benchmark_graph(n, tau1, tau2, mu,
+                            average_degree=average_degree,
+                            max_degree=max_degree,
+                            min_community=min_community,
+                            max_community=max_community,
+                            max_iters=max_iters,
+                            seed=42)
+
+    print(f"Number of nodes: {len(G.nodes)}")
+    print(f"Number of edges: {len(G.edges)}")
+
+    # 加载图数据
+    graph_data = load_graph(G)
+
+    # 执行Louvain算法
+    algorithm = Louvain(graph_data)
+    communities = algorithm.execute()
+
+    # 可视化结果
+    pos = nx.spring_layout(G)
+    plt.figure(figsize=(10, 10))
+
+    # 根据Louvain社区划分可视化
+    showCommunity(G, communities, pos)
+
+except Exception as e:
+    print(f"Error generating the LFR graph: {e}")
