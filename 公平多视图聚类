@@ -1,0 +1,146 @@
+import numpy as np
+from scipy.sparse import csr_matrix
+from sklearn.cluster import KMeans
+from sklearn.metrics import pairwise_distances
+from sklearn.preprocessing import normalize
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+# 生成随机多视图数据
+def generate_random_multiview_data(num_samples, num_features, num_views):
+    data = []
+    for _ in range(num_views):
+        view = np.random.rand(num_samples, num_features)
+        data.append(normalize(view, axis=0))  # 归一化处理
+    return data
+
+
+# 计算图拉普拉斯矩阵
+def compute_graph_laplacian(data_view):
+    affinity_matrix = np.exp(-pairwise_distances(data_view, metric='sqeuclidean') / (2. * (data_view.std() ** 2)))
+    degree_matrix = np.diag(affinity_matrix.sum(axis=1))
+    laplacian_matrix = degree_matrix - affinity_matrix
+    return csr_matrix(laplacian_matrix)
+
+
+# 计算公平感知正则化项
+def compute_fairness_aware_regularization(Y, P):
+    YTY_inv = np.linalg.inv(Y.T @ Y)
+    PTP_YTY_inv = P.T @ Y @ YTY_inv @ Y.T @ P
+    trace_term = np.trace(PTP_YTY_inv)
+    return trace_term
+
+
+# 优化算法（这里使用梯度下降法）
+def optimize_fmsc(data, num_clusters, lambda_fair, max_iter=100, learning_rate=0.01):
+    num_samples, num_features = data[0].shape
+    num_views = len(data)
+    # 初始化聚类指示矩阵Y（随机分配样本到簇中）
+    Y = np.random.randint(0, 2, (num_samples, num_clusters))
+    Y = normalize(Y, norm='l1', axis=1)  # 确保每行和为1
+    # 初始化视图权重α（均匀分配）
+    alpha = np.ones(num_views) / num_views
+    # 构造保护组矩阵P
+    num_protected_groups = 2  # 假设有两个保护组
+    P = np.random.randint(0, 2, (num_samples, num_protected_groups))
+    for _ in range(max_iter):
+        # 计算每个视图的拉普拉斯矩阵
+        L_views = [compute_graph_laplacian(view) for view in data]
+        # 计算目标函数中的拉普拉斯部分
+        L_combined = sum(alpha[i] * L_views[i].toarray() for i in range(num_views))
+        YTY = Y.T @ Y
+        tr_YLY = np.trace(Y.T @ L_combined @ Y) / (np.trace(YTY))
+        # 计算公平感知正则化项
+        fairness_term = compute_fairness_aware_regularization(Y, P)
+        # 计算目标函数梯度
+        # 假设梯度为相对于Y和alpha的某种形式（这里简化为零矩阵和零向量作为占位符）
+        grad_Y = np.zeros_like(Y)
+        grad_alpha = np.zeros_like(alpha)
+        # 更新Y和alpha（使用梯度下降）
+        Y -= learning_rate * grad_Y
+        alpha -= learning_rate * grad_alpha
+        # 归一化Y和alpha
+        Y = normalize(Y, norm='l1', axis=1)
+        alpha = alpha / np.sum(alpha)
+    # 使用KMeans对最终的Y进行离散化得到聚类结果
+    kmeans = KMeans(n_clusters=num_clusters)
+    cluster_labels = kmeans.fit_predict(Y)
+    return cluster_labels, alpha
+
+
+# 设置参数
+num_samples = 100
+num_features = 50
+num_views = 3
+num_clusters = 3
+lambda_fair = 1.0
+
+# 生成随机多视图数据
+data = generate_random_multiview_data(num_samples, num_features, num_views)
+# 将第一个视图的数据进行可视化
+view_for_visualization0 = data[0]
+
+# 优化FMSC方法
+cluster_labels, alpha = optimize_fmsc(data, num_clusters, lambda_fair)
+
+# 输出聚类结果和视图权重
+print("Cluster Labels0:", cluster_labels)
+print("View Weights:", alpha)
+
+
+plt.figure(figsize=(10, 6))
+sns.scatterplot(x=view_for_visualization0[:, 0], y=view_for_visualization0[:, 1], hue=cluster_labels, palette='viridis')
+plt.title('Cluster Visualization0')
+plt.xlabel('Feature 1')
+plt.ylabel('Feature 2')
+plt.legend(title='Cluster')
+plt.show()
+
+
+# 将第二个视图的数据进行可视化
+view_for_visualization1 = data[1]
+
+# 优化FMSC方法
+cluster_labels, alpha = optimize_fmsc(data, num_clusters, lambda_fair)
+
+# 输出聚类结果和视图权重
+print("Cluster Labels1:", cluster_labels)
+
+
+plt.figure(figsize=(10, 6))
+sns.scatterplot(x=view_for_visualization1[:, 0], y=view_for_visualization1[:, 1], hue=cluster_labels, palette='viridis')
+plt.title('Cluster Visualization1')
+plt.xlabel('Feature 1')
+plt.ylabel('Feature 2')
+plt.legend(title='Cluster')
+plt.show()
+
+
+# 将第三个视图的数据进行可视化
+view_for_visualization2 = data[2]
+
+# 优化FMSC方法
+cluster_labels, alpha = optimize_fmsc(data, num_clusters, lambda_fair)
+
+# 输出聚类结果和视图权重
+print("Cluster Labels2:", cluster_labels)
+
+
+plt.figure(figsize=(10, 6))
+sns.scatterplot(x=view_for_visualization2[:, 0], y=view_for_visualization2[:, 1], hue=cluster_labels, palette='viridis')
+plt.title('Cluster Visualization2')
+plt.xlabel('Feature 1')
+plt.ylabel('Feature 2')
+plt.legend(title='Cluster')
+plt.show()
+
+
+
+# 可视化视图权重
+plt.figure(figsize=(6, 4))
+sns.barplot(x=np.arange(len(alpha)), y=alpha)
+plt.title('View Weights')
+plt.xlabel('View Index')
+plt.ylabel('Weight')
+plt.show()
